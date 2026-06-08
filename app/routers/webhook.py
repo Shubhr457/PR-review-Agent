@@ -3,12 +3,12 @@ app/routers/webhook.py
 
 POST /webhook — GitHub pull_request event receiver.
 
-Responsibilities (Milestone 1):
+Responsibilities:
   1. Validate the X-Hub-Signature-256 HMAC signature.
   2. Parse the payload into a Pydantic WebhookPayload model.
   3. Filter to only handled PR actions (opened / synchronize / reopened).
   4. Acknowledge GitHub within 10 seconds (FR-02).
-  5. Stub review dispatch — real dispatch added in Milestone 2/3.
+  5. Dispatch review as BackgroundTask or SQS job (FR-08).
 """
 
 import json
@@ -16,11 +16,13 @@ import logging
 from typing import Any, Dict, FrozenSet
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status
+from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
 from app.core.config import Settings, get_settings
 from app.core.security import verify_webhook_signature
 from app.models.github_schemas import WebhookPayload
+from app.routers.reviews import run_inline_review
 
 logger = logging.getLogger(__name__)
 
@@ -84,19 +86,32 @@ async def receive_webhook(
         payload.pull_request.changed_files,
     )
 
-    # ── 5. Dispatch review (stubbed — Milestone 2/3 will fill this in) ───────
-    # Routing logic per FR-08:
-    #   ≤ LARGE_PR_THRESHOLD files → inline BackgroundTask
-    #   >  LARGE_PR_THRESHOLD files → SQS queue, return 202
-    #
-    # if payload.pull_request.changed_files > settings.large_pr_threshold:
-    #     await sqs.enqueue(payload, settings)
-    #     return JSONResponse(status_code=202, content={"message": "Queued for review."})
-    # else:
-    #     _background_tasks.add_task(reviews.run_inline_review, payload, settings)
+    # ── 5. Dispatch review (FR-08) ────────────────────────────────────────────
+    if payload.pull_request.changed_files > settings.large_pr_threshold:
+        # Large PR → SQS queue (Milestone 4 will implement sqs.enqueue).
+        logger.info(
+            "PR #%s has %d files (> %d) — queuing to SQS (stub).",
+            payload.number,
+            payload.pull_request.changed_files,
+            settings.large_pr_threshold,
+        )
+        # TODO (Milestone 4): await sqs.enqueue(payload, settings)
+        return JSONResponse(
+            status_code=status.HTTP_202_ACCEPTED,
+            content={
+                "message": "Large PR queued for async review.",
+                "action": payload.action,
+                "pr_number": payload.number,
+                "repo": payload.repository.full_name,
+                "changed_files": payload.pull_request.changed_files,
+            },
+        )
+
+    # Small / normal PR → inline BackgroundTask.
+    _background_tasks.add_task(run_inline_review, payload, settings)
 
     return {
-        "message": "Webhook received — review queued.",
+        "message": "Webhook received — review dispatched.",
         "action": payload.action,
         "pr_number": payload.number,
         "repo": payload.repository.full_name,

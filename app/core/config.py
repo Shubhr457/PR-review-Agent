@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     # ── GitHub ──────────────────────────────────────────────────────────────
     github_token: str = ""
     github_webhook_secret: str = ""
+    github_api_base_url: str = "https://api.github.com"
 
     # ── OpenAI ──────────────────────────────────────────────────────────────
     openai_api_key: str = ""

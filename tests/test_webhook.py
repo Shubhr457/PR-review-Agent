@@ -65,6 +65,33 @@ def test_handled_actions_return_200(client: TestClient, action: str) -> None:
     assert data["action"] == action
     assert data["pr_number"] == 42
     assert data["repo"] == "octocat/Hello-World"
+    assert "dispatched" in data["message"].lower()
+
+
+# ── Dispatch routing (FR-08 / Milestone 2) ───────────────────────────────────
+
+
+def test_large_pr_returns_202(client: TestClient) -> None:
+    """PRs exceeding LARGE_PR_THRESHOLD should return 202 (SQS stub)."""
+    # Default threshold in test settings is 15 (from Settings defaults).
+    payload = json.dumps(minimal_pr_payload(changed_files=20)).encode()
+    headers = webhook_headers(payload)
+    response = client.post("/webhook", content=payload, headers=headers)
+    assert response.status_code == 202
+    data: Dict[str, Any] = response.json()
+    assert data["changed_files"] == 20
+    assert "queued" in data["message"].lower()
+
+
+def test_small_pr_returns_200_with_dispatch(client: TestClient) -> None:
+    """PRs within threshold should dispatch inline and return 200."""
+    payload = json.dumps(minimal_pr_payload(changed_files=5)).encode()
+    headers = webhook_headers(payload)
+    response = client.post("/webhook", content=payload, headers=headers)
+    assert response.status_code == 200
+    data: Dict[str, Any] = response.json()
+    assert data["changed_files"] == 5
+    assert "dispatched" in data["message"].lower()
 
 
 @pytest.mark.parametrize(
