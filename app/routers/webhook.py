@@ -23,6 +23,7 @@ from app.core.config import Settings, get_settings
 from app.core.security import verify_webhook_signature
 from app.models.github_schemas import WebhookPayload
 from app.routers.reviews import run_inline_review
+from app.services.sqs import enqueue_payload
 
 logger = logging.getLogger(__name__)
 
@@ -88,14 +89,14 @@ async def receive_webhook(
 
     # ── 5. Dispatch review (FR-08) ────────────────────────────────────────────
     if payload.pull_request.changed_files > settings.large_pr_threshold:
-        # Large PR → SQS queue (Milestone 4 will implement sqs.enqueue).
+        # Large PR → SQS queue (Milestone 4)
         logger.info(
-            "PR #%s has %d files (> %d) — queuing to SQS (stub).",
+            "PR #%s has %d files (> %d) — queuing to SQS.",
             payload.number,
             payload.pull_request.changed_files,
             settings.large_pr_threshold,
         )
-        # TODO (Milestone 4): await sqs.enqueue(payload, settings)
+        await enqueue_payload(payload, settings)
         return JSONResponse(
             status_code=status.HTTP_202_ACCEPTED,
             content={

@@ -47,6 +47,15 @@ def client(app):
         yield c
 
 
+@pytest.fixture(autouse=True)
+def mock_boto3_client():
+    """Mock boto3 SQS client globally for all tests to prevent real AWS calls."""
+    from unittest.mock import MagicMock, patch
+    with patch("app.services.sqs.boto3.client") as mock:
+        mock.return_value = MagicMock()
+        yield mock
+
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 
