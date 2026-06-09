@@ -248,7 +248,7 @@ class TestSettings:
     def test_defaults(self) -> None:
         from app.core.config import Settings
 
-        s = Settings()
+        s = Settings(_env_file=None)
         assert s.max_files_per_pr == 10
         assert s.max_diff_chars == 8000
         assert s.large_pr_threshold == 15

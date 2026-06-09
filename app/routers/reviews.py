@@ -23,6 +23,9 @@ from app.models.github_schemas import WebhookPayload
 from app.models.review_schemas import ReviewResult
 from app.services.diff_processor import prepare_diffs
 from app.services.github import GitHubService
+import asyncio
+from app.services.openai_review import OpenAIReviewService
+from app.services.token_manager import calculate_total_tokens
 
 logger = logging.getLogger(__name__)
 
@@ -79,21 +82,48 @@ async def run_inline_review(
             pr_number, owner, repo, len(prepared),
         )
 
-        # ── 3. AI Review (Milestone 3 stub) ──────────────────────────────
-        # In Milestone 3 each diff will be sent to OpenAI concurrently.
-        # For now we log the prepared diffs and post an empty (APPROVE) review.
-        for diff in prepared:
-            logger.info(
-                "  → %s (%d chars)",
-                diff["filename"],
-                len(diff["patch"]),
-            )
+        # ── 3. AI Review (Milestone 3 integration) ───────────────────────
+        # Estimate total tokens for logging.
+        total_tokens = calculate_total_tokens(prepared)
+        logger.info(
+            "Estimated total tokens for review on PR #%d: %d",
+            pr_number,
+            total_tokens,
+        )
 
-        # Placeholder review — no AI comments yet.
+        openai_service = OpenAIReviewService(api_key=settings.openai_api_key)
+
+        async def review_single_file(diff: Dict[str, str]):
+            filename = diff["filename"]
+            patch = diff["patch"]
+            try:
+                return await openai_service.review_file_diff(
+                    filename,
+                    patch,
+                    model=settings.openai_model,
+                )
+            except Exception as exc:
+                # FR-12: Handle OpenAI API errors gracefully per file
+                logger.error(
+                    "Gracefully handling review failure for file %s: %s",
+                    filename,
+                    exc,
+                )
+                return []
+
+        # FR-11: Process all files concurrently
+        tasks = [review_single_file(diff) for diff in prepared]
+        results = await asyncio.gather(*tasks)
+
+        # Flatten list of lists
+        comments = []
+        for file_comments in results:
+            comments.extend(file_comments)
+
         review = ReviewResult(
             pr_number=pr_number,
             repo_full_name=payload.repository.full_name,
-            comments=[],  # Milestone 3 will populate this.
+            comments=comments,
         )
 
         # ── 4. Post review to GitHub ─────────────────────────────────────
