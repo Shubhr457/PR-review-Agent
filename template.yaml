@@ -49,9 +49,6 @@ Resources:
       PackageType: Image
       Timeout: 60
       MemorySize: 256
-      AutoPublishAlias: live
-      ProvisionedConcurrencyConfig:
-        ProvisionedConcurrentExecutions: 1
       Events:
         WebhookPost:
           Type: HttpApi
@@ -223,22 +220,22 @@ Resources:
             Metric:
               MetricName: Errors
               Namespace: AWS/Lambda
+              Dimensions:
+                - Name: FunctionName
+                  Value: !Ref WebhookFunction
             Period: 300
             Stat: Sum
-            Dimensions:
-              - Name: FunctionName
-                Value: !Ref WebhookFunction
           ReturnData: false
         - Id: invocations
           MetricStat:
             Metric:
               MetricName: Invocations
               Namespace: AWS/Lambda
+              Dimensions:
+                - Name: FunctionName
+                  Value: !Ref WebhookFunction
             Period: 300
             Stat: Sum
-            Dimensions:
-              - Name: FunctionName
-                Value: !Ref WebhookFunction
           ReturnData: false
 
   SQSConsumerErrorAlarm:
@@ -258,22 +255,22 @@ Resources:
             Metric:
               MetricName: Errors
               Namespace: AWS/Lambda
+              Dimensions:
+                - Name: FunctionName
+                  Value: !Ref SQSConsumerFunction
             Period: 300
             Stat: Sum
-            Dimensions:
-              - Name: FunctionName
-                Value: !Ref SQSConsumerFunction
           ReturnData: false
         - Id: invocations
           MetricStat:
             Metric:
               MetricName: Invocations
               Namespace: AWS/Lambda
+              Dimensions:
+                - Name: FunctionName
+                  Value: !Ref SQSConsumerFunction
             Period: 300
             Stat: Sum
-            Dimensions:
-              - Name: FunctionName
-                Value: !Ref SQSConsumerFunction
           ReturnData: false
 
   SQSConsumerP95DurationAlarm:
