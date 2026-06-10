@@ -52,6 +52,15 @@ async def run_inline_review(
     )
 
     try:
+        # ── 0. Set commit status to pending ──────────────────────────────
+        await github.post_commit_status(
+            owner=owner,
+            repo=repo,
+            sha=commit_sha,
+            state="pending",
+            description="PR Review Agent is reviewing changes...",
+        )
+
         # ── 1. Fetch changed files ───────────────────────────────────────
         raw_files = await github.fetch_pr_files(owner, repo, pr_number)
 
@@ -75,6 +84,13 @@ async def run_inline_review(
                 comments=[],
             )
             await github.post_review(owner, repo, pr_number, review, commit_sha)
+            await github.post_commit_status(
+                owner=owner,
+                repo=repo,
+                sha=commit_sha,
+                state="success",
+                description="Skipped: no reviewable files.",
+            )
             return
 
         logger.info(
@@ -129,12 +145,32 @@ async def run_inline_review(
         # ── 4. Post review to GitHub ─────────────────────────────────────
         await github.post_review(owner, repo, pr_number, review, commit_sha)
 
+        # ── 5. Update commit status to success ───────────────────────────
+        await github.post_commit_status(
+            owner=owner,
+            repo=repo,
+            sha=commit_sha,
+            state="success",
+            description="Review completed successfully.",
+        )
+
     except Exception as exc:
         # ── FR-16: fail open ─────────────────────────────────────────────
         logger.exception(
             "Review failed for PR #%d on %s/%s.",
             pr_number, owner, repo,
         )
+        try:
+            await github.post_commit_status(
+                owner=owner,
+                repo=repo,
+                sha=commit_sha,
+                state="success",
+                description=f"Fail-open: {str(exc)}",
+            )
+        except Exception:
+            logger.exception("Could not post fail-open commit status.")
+
         await github.post_failure_comment(
             owner, repo, pr_number, str(exc),
         )

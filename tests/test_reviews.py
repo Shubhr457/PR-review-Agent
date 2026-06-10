@@ -42,6 +42,7 @@ async def test_run_inline_review_pipeline_success(
         ]
     )
     mock_github.post_review = AsyncMock(return_value={"id": 123})
+    mock_github.post_commit_status = AsyncMock()
 
     # 3. Setup mock OpenAI service
     mock_openai = MagicMock()
@@ -123,6 +124,7 @@ async def test_run_inline_review_graceful_openai_file_failure(
         ]
     )
     mock_github.post_review = AsyncMock()
+    mock_github.post_commit_status = AsyncMock()
 
     # Mock OpenAI: a.py fails, b.py succeeds
     mock_openai = MagicMock()

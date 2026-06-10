@@ -100,6 +100,8 @@ def create_app() -> FastAPI:
 app = create_app()
 
 # ── AWS Lambda handler (Milestone 5) ─────────────────────────────────────────
-# Uncomment when deploying to Lambda:
-# from mangum import Mangum
-# handler = Mangum(app, lifespan="on")
+# Mangum wraps the ASGI app for use with AWS Lambda + API Gateway.
+# lifespan="on" ensures startup events (secrets loading) run on cold start.
+from mangum import Mangum
+
+handler = Mangum(app, lifespan="on")

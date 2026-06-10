@@ -221,3 +221,47 @@ class GitHubService:
                 owner, repo, pr_number,
             )
             return None
+
+    # ── Post Commit Status (Milestone 6) ─────────────────────────────────────
+
+    async def post_commit_status(
+        self,
+        owner: str,
+        repo: str,
+        sha: str,
+        state: str,
+        description: str,
+        context: str = "PR Review Agent",
+        target_url: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Post a commit status check on a specific commit.
+
+        Args:
+            owner:       Repository owner.
+            repo:        Repository name.
+            sha:         Target commit SHA.
+            state:       The status state: 'pending', 'success', 'failure', or 'error'.
+            description: Short summary explanation of the status (capped at 140 chars).
+            context:     Unique identifier for the status check (default: 'PR Review Agent').
+            target_url:  Optional URL to link to from the status check.
+        """
+        payload: Dict[str, Any] = {
+            "state": state,
+            "description": description[:140],  # GitHub API limits this to 140 chars
+            "context": context,
+        }
+        if target_url:
+            payload["target_url"] = target_url
+
+        async with self._client() as client:
+            response = await client.post(
+                f"/repos/{owner}/{repo}/statuses/{sha}",
+                json=payload,
+            )
+            self._raise_for_status(response)
+
+        logger.info(
+            "Posted status '%s' for commit %s on %s/%s. Context: %s.",
+            state, sha[:7], owner, repo, context,
+        )
+        return response.json()
