@@ -36,6 +36,12 @@ def verify_webhook_signature(
     Raises:
         HTTPException 401: If the header is missing or the digest does not match.
     """
+    if not secret:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Webhook secret is not configured.",
+        )
+
     if not signature_header:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

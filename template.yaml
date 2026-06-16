@@ -1,0 +1,324 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# PR Review Agent — AWS SAM Template
+# ═══════════════════════════════════════════════════════════════════════════════
+# Deploy:  sam build && sam deploy --guided
+# Validate: sam validate
+# ═══════════════════════════════════════════════════════════════════════════════
+
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+
+Description: >
+  GitHub PR Review Agent — AI-powered automated code review
+  via FastAPI + AWS Lambda behind API Gateway.
+
+# ── Global defaults ──────────────────────────────────────────────────────────
+Globals:
+  Function:
+    Timeout: 60
+    MemorySize: 256
+    Architectures:
+      - arm64
+    Environment:
+      Variables:
+        PR_REVIEW_SECRET_NAME: !Ref SecretName
+        SQS_QUEUE_URL: !Ref PRReviewQueue
+
+# ── Parameters ───────────────────────────────────────────────────────────────
+Parameters:
+  SecretName:
+    Type: String
+    Default: pr-review-agent/secrets
+    Description: >
+      Name of the AWS Secrets Manager secret containing GITHUB_TOKEN,
+      OPENAI_API_KEY, and GITHUB_WEBHOOK_SECRET as a JSON object.
+
+  LargeReviewTimeoutSeconds:
+    Type: Number
+    Default: 900
+    Description: Timeout (seconds) for the SQS consumer Lambda (max 900 = 15 min).
+
+# ── Resources ────────────────────────────────────────────────────────────────
+Resources:
+
+  # ── Webhook Lambda (API Gateway → FastAPI) ─────────────────────────────────
+  WebhookFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: pr-review-agent-webhook
+      PackageType: Image
+      Timeout: 60
+      MemorySize: 256
+      Events:
+        WebhookPost:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /webhook
+            Method: POST
+        HealthGet:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /health
+            Method: GET
+        DocsGet:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /{proxy+}
+            Method: GET
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource: !Sub "arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${SecretName}*"
+            - Effect: Allow
+              Action:
+                - kms:Decrypt
+              Resource: "*"
+              Condition:
+                StringEquals:
+                  kms:ViaService: !Sub "secretsmanager.${AWS::Region}.amazonaws.com"
+            - Effect: Allow
+              Action:
+                - sqs:SendMessage
+              Resource: !GetAtt PRReviewQueue.Arn
+    Metadata:
+      DockerTag: webhook-v1
+      DockerContext: .
+      Dockerfile: Dockerfile
+
+  # ── SQS Consumer Lambda (large PR processing) ─────────────────────────────
+  SQSConsumerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: pr-review-agent-sqs-consumer
+      PackageType: Image
+      Timeout: !Ref LargeReviewTimeoutSeconds
+      MemorySize: 512
+      Events:
+        SQSEvent:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt PRReviewQueue.Arn
+            BatchSize: 1
+            Enabled: true
+            FunctionResponseTypes:
+              - ReportBatchItemFailures
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource: !Sub "arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${SecretName}*"
+            - Effect: Allow
+              Action:
+                - kms:Decrypt
+              Resource: "*"
+              Condition:
+                StringEquals:
+                  kms:ViaService: !Sub "secretsmanager.${AWS::Region}.amazonaws.com"
+            - Effect: Allow
+              Action:
+                - sqs:ReceiveMessage
+                - sqs:DeleteMessage
+                - sqs:GetQueueAttributes
+              Resource: !GetAtt PRReviewQueue.Arn
+    Metadata:
+      DockerTag: sqs-consumer-v1
+      DockerContext: .
+      Dockerfile: Dockerfile
+
+  # ── API Gateway (HTTP API v2) ──────────────────────────────────────────────
+  HttpApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      StageName: prod
+      Description: PR Review Agent API Gateway
+      CorsConfiguration:
+        AllowOrigins:
+          - "https://github.com"
+        AllowMethods:
+          - POST
+          - GET
+        AllowHeaders:
+          - "*"
+      # Rate limiting: 100 req/s sustained, 1000 burst (Section 9.2).
+      DefaultRouteSettings:
+        ThrottlingBurstLimit: 1000
+        ThrottlingRateLimit: 100
+
+  # ── SQS Queue (large PR processing) ───────────────────────────────────────
+  PRReviewQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: pr-review-queue
+      VisibilityTimeout: 960   # Must exceed Lambda timeout (900s) + buffer
+      MessageRetentionPeriod: 86400  # 1 day
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt PRReviewDLQ.Arn
+        maxReceiveCount: 3     # After 3 failures → DLQ
+
+  # ── Dead Letter Queue ─────────────────────────────────────────────────────
+  PRReviewDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: pr-review-dlq
+      MessageRetentionPeriod: 1209600  # 14 days
+
+  # ── Log Groups (Milestone 6) ──────────────────────────────────────────────
+  WebhookFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${WebhookFunction}"
+      RetentionInDays: 7
+
+  SQSConsumerFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${SQSConsumerFunction}"
+      RetentionInDays: 7
+
+  # ── Log Metric Filter (Milestone 6) ───────────────────────────────────────
+  GitHubAuthErrorMetricFilter:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !Ref WebhookFunctionLogGroup
+      FilterPattern: '"GitHub API 401"'
+      MetricTransformations:
+        - MetricValue: "1"
+          MetricNamespace: "PRReviewAgent"
+          MetricName: "GitHubAuth401Errors"
+
+  # ── CloudWatch Alarms (Milestone 6) ───────────────────────────────────────
+  GitHubAuthErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: "Alarm if there are GitHub API 401 authentication errors"
+      MetricName: GitHubAuth401Errors
+      Namespace: PRReviewAgent
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+
+  WebhookErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: "Alarm if webhook Lambda error rate is > 5%"
+      ComparisonOperator: GreaterThanThreshold
+      EvaluationPeriods: 1
+      Threshold: 5.0
+      Metrics:
+        - Id: expression1
+          Expression: "errors / invocations * 100"
+          Label: "ErrorRate"
+          ReturnData: true
+        - Id: errors
+          MetricStat:
+            Metric:
+              MetricName: Errors
+              Namespace: AWS/Lambda
+              Dimensions:
+                - Name: FunctionName
+                  Value: !Ref WebhookFunction
+            Period: 300
+            Stat: Sum
+          ReturnData: false
+        - Id: invocations
+          MetricStat:
+            Metric:
+              MetricName: Invocations
+              Namespace: AWS/Lambda
+              Dimensions:
+                - Name: FunctionName
+                  Value: !Ref WebhookFunction
+            Period: 300
+            Stat: Sum
+          ReturnData: false
+
+  SQSConsumerErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: "Alarm if SQS Consumer Lambda error rate is > 5%"
+      ComparisonOperator: GreaterThanThreshold
+      EvaluationPeriods: 1
+      Threshold: 5.0
+      Metrics:
+        - Id: expression1
+          Expression: "errors / invocations * 100"
+          Label: "ErrorRate"
+          ReturnData: true
+        - Id: errors
+          MetricStat:
+            Metric:
+              MetricName: Errors
+              Namespace: AWS/Lambda
+              Dimensions:
+                - Name: FunctionName
+                  Value: !Ref SQSConsumerFunction
+            Period: 300
+            Stat: Sum
+          ReturnData: false
+        - Id: invocations
+          MetricStat:
+            Metric:
+              MetricName: Invocations
+              Namespace: AWS/Lambda
+              Dimensions:
+                - Name: FunctionName
+                  Value: !Ref SQSConsumerFunction
+            Period: 300
+            Stat: Sum
+          ReturnData: false
+
+  SQSConsumerP95DurationAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: "Alarm if SQSConsumerFunction P95 execution duration exceeds 120s"
+      MetricName: Duration
+      Namespace: AWS/Lambda
+      ExtendedStatistic: p95
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 120000
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref SQSConsumerFunction
+
+  DLQDepthAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: "Alarm if messages exist in the Dead Letter Queue (DLQ)"
+      MetricName: ApproximateNumberOfMessagesVisible
+      Namespace: AWS/SQS
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt PRReviewDLQ.QueueName
+
+# ── Outputs ──────────────────────────────────────────────────────────────────
+Outputs:
+  ApiEndpoint:
+    Description: API Gateway endpoint URL
+    Value: !Sub "https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com/prod"
+
+  WebhookUrl:
+    Description: Full webhook URL to configure in GitHub repository settings
+    Value: !Sub "https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com/prod/webhook"
+
+  QueueUrl:
+    Description: SQS Queue URL for large PR processing
+    Value: !Ref PRReviewQueue
+
+  DLQUrl:
+    Description: Dead Letter Queue URL for failed reviews
+    Value: !Ref PRReviewDLQ

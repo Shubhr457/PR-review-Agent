@@ -16,9 +16,11 @@ class Settings(BaseSettings):
     # ── GitHub ──────────────────────────────────────────────────────────────
     github_token: str = ""
     github_webhook_secret: str = ""
+    github_api_base_url: str = "https://api.github.com"
 
     # ── OpenAI ──────────────────────────────────────────────────────────────
     openai_api_key: str = ""
+    openai_model: str = "gpt-4o"
 
     # ── AWS / SQS ───────────────────────────────────────────────────────────
     sqs_queue_url: str = ""
@@ -26,6 +28,7 @@ class Settings(BaseSettings):
     # ── Tuning ──────────────────────────────────────────────────────────────
     max_files_per_pr: int = 10
     max_diff_chars: int = 8_000
+    max_total_tokens: int = 0
     large_pr_threshold: int = 15
     skip_extensions: str = (
         ".lock,.svg,.png,.jpg,.jpeg,.gif,.json,.csv,.md,.txt,.yaml,.yml"
@@ -55,3 +58,18 @@ class Settings(BaseSettings):
 def get_settings() -> Settings:
     """Return a cached singleton Settings instance (one per Lambda container)."""
     return Settings()
+
+
+def validate_required_settings(settings: Settings) -> None:
+    """Fail fast when production-required configuration is missing."""
+    required_values = {
+        "GITHUB_TOKEN": settings.github_token,
+        "OPENAI_API_KEY": settings.openai_api_key,
+        "GITHUB_WEBHOOK_SECRET": settings.github_webhook_secret,
+        "SQS_QUEUE_URL": settings.sqs_queue_url,
+    }
+    missing = [name for name, value in required_values.items() if not value]
+    if missing:
+        raise RuntimeError(
+            "Missing required configuration: " + ", ".join(sorted(missing))
+        )

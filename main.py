@@ -11,12 +11,13 @@ AWS Lambda (Milestone 5):
 """
 
 import logging
+import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.core.config import get_settings
+from app.core.config import get_settings, validate_required_settings
 from app.core.secrets import load_secrets_into_env
 from app.routers import health, reviews, webhook
 
@@ -42,8 +43,11 @@ async def lifespan(app: FastAPI):
     """
     # Load secrets first so Settings picks them up from env vars.
     load_secrets_into_env()
+    get_settings.cache_clear()
 
     settings = get_settings()
+    if os.getenv("AWS_LAMBDA_FUNCTION_NAME"):
+        validate_required_settings(settings)
     logger.info(
         "PR Review Agent v%s starting — docs=%s",
         settings.app_version,
@@ -100,6 +104,8 @@ def create_app() -> FastAPI:
 app = create_app()
 
 # ── AWS Lambda handler (Milestone 5) ─────────────────────────────────────────
-# Uncomment when deploying to Lambda:
-# from mangum import Mangum
-# handler = Mangum(app, lifespan="on")
+# Mangum wraps the ASGI app for use with AWS Lambda + API Gateway.
+# lifespan="on" ensures startup events (secrets loading) run on cold start.
+from mangum import Mangum
+
+handler = Mangum(app, lifespan="on")
