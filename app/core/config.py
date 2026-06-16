@@ -1,3 +1,5 @@
+import os
+
 """
 app/core/config.py
 
@@ -9,6 +11,7 @@ class is always the single source of truth regardless of environment.
 
 from functools import lru_cache
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -52,6 +55,13 @@ class Settings(BaseSettings):
             for ext in self.skip_extensions.split(",")
             if ext.strip()
         ]
+
+    @model_validator(mode="after")
+    def enforce_lambda_security(self) -> "Settings":
+        """Force Swagger docs off when running on AWS Lambda."""
+        if os.getenv("AWS_LAMBDA_FUNCTION_NAME"):
+            self.enable_docs = False
+        return self
 
 
 @lru_cache
