@@ -8,6 +8,7 @@ import pytest
 
 from app.services.diff_processor import (
     TRUNCATION_NOTICE,
+    extract_reviewable_new_lines,
     filter_files,
     prepare_diffs,
     prioritize_files,
@@ -110,6 +111,23 @@ class TestTruncateDiff:
 
     def test_empty_string_unchanged(self) -> None:
         assert truncate_diff("", 100) == ""
+
+
+class TestExtractReviewableNewLines:
+    def test_extracts_added_and_context_lines_from_new_file(self) -> None:
+        patch = (
+            "@@ -10,5 +20,6 @@\n"
+            " context\n"
+            "-old line\n"
+            "+new line\n"
+            " another context\n"
+            "\\ No newline at end of file\n"
+        )
+        assert extract_reviewable_new_lines(patch) == {20, 21, 22}
+
+    def test_empty_patch_has_no_reviewable_lines(self) -> None:
+        assert extract_reviewable_new_lines(None) == set()
+        assert extract_reviewable_new_lines("") == set()
 
 
 # ── prepare_diffs (full pipeline) ────────────────────────────────────────────

@@ -20,6 +20,10 @@ from app.routers.reviews import run_inline_review
 logger = logging.getLogger(__name__)
 
 
+class SQSConfigurationError(RuntimeError):
+    """Raised when SQS routing is requested but not configured."""
+
+
 def _send_sqs_message(queue_url: str, body_str: str, region_name: str) -> None:
     """Synchronous helper executed inside a thread pool to avoid blocking ASGI."""
     sqs = boto3.client("sqs", region_name=region_name)
@@ -32,8 +36,7 @@ async def enqueue_payload(payload: WebhookPayload, settings: Settings) -> None:
     Runs boto3 operations in an execution thread.
     """
     if not settings.sqs_queue_url:
-        logger.error("SQS queue URL is not configured. Cannot enqueue PR review.")
-        return
+        raise SQSConfigurationError("SQS_QUEUE_URL is required for large PR reviews.")
 
     # Extract region from queue URL (e.g. sqs.us-east-1.amazonaws.com)
     region_name = "us-east-1"
@@ -65,7 +68,7 @@ async def enqueue_payload(payload: WebhookPayload, settings: Settings) -> None:
     )
 
 
-async def process_sqs_event(event: Dict[str, Any]) -> None:
+async def process_sqs_event(event: Dict[str, Any]) -> Dict[str, Any]:
     """Consume record batch from AWS SQS Event Source Mapping.
 
     Deserializes payload and executes run_inline_review directly.
@@ -77,7 +80,9 @@ async def process_sqs_event(event: Dict[str, Any]) -> None:
     records = event.get("Records", [])
     logger.info("Processing SQS event containing %d record(s).", len(records))
 
-    for record in records:
+    failures = []
+
+    for index, record in enumerate(records):
         body = record.get("body")
         if not body:
             logger.warning("Empty SQS record body found. Skipping record.")
@@ -95,9 +100,13 @@ async def process_sqs_event(event: Dict[str, Any]) -> None:
             await run_inline_review(payload, settings)
 
         except Exception as exc:
-            # SQS will retry messages that throw exceptions (based on visibility timeout/maxReceiveCount)
+            # With ReportBatchItemFailures enabled, SQS retries only failed records.
             logger.exception("Failed to process SQS message record.")
-            raise exc
+            failures.append({
+                "itemIdentifier": record.get("messageId") or str(index),
+            })
+
+    return {"batchItemFailures": failures}
 
 
 def sqs_lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
@@ -105,5 +114,9 @@ def sqs_lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
 
     Synchronously wraps the async event consumer.
     """
-    asyncio.run(process_sqs_event(event))
-    return {"statusCode": 200, "body": "Processed SQS records successfully."}
+    result = asyncio.run(process_sqs_event(event))
+    return {
+        "statusCode": 200,
+        "body": "Processed SQS records successfully.",
+        **result,
+    }

@@ -13,11 +13,13 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any, Dict, List
+import re
+from typing import Any, Dict, List, Set
 
 logger = logging.getLogger(__name__)
 
 TRUNCATION_NOTICE = "\n\n... [truncated — diff exceeded maximum character limit] ..."
+_HUNK_HEADER_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 
 
 # ── FR-05 ────────────────────────────────────────────────────────────────────
@@ -99,6 +101,36 @@ def truncate_diff(patch: str | None, max_chars: int) -> str:
         "Truncating diff from %d to %d chars.", len(patch), max_chars,
     )
     return patch[:max_chars] + TRUNCATION_NOTICE
+
+
+def extract_reviewable_new_lines(patch: str | None) -> Set[int]:
+    """Return new-file line numbers that can receive GitHub review comments."""
+    if not patch:
+        return set()
+
+    reviewable_lines: Set[int] = set()
+    current_line: int | None = None
+
+    for raw_line in patch.splitlines():
+        header_match = _HUNK_HEADER_RE.match(raw_line)
+        if header_match:
+            current_line = int(header_match.group(1))
+            continue
+
+        if current_line is None:
+            continue
+
+        if raw_line.startswith("+") or raw_line.startswith(" "):
+            reviewable_lines.add(current_line)
+            current_line += 1
+        elif raw_line.startswith("-"):
+            continue
+        elif raw_line.startswith("\\"):
+            continue
+        else:
+            current_line += 1
+
+    return reviewable_lines
 
 
 # ── Pipeline ─────────────────────────────────────────────────────────────────

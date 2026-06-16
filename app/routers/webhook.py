@@ -23,7 +23,7 @@ from app.core.config import Settings, get_settings
 from app.core.security import verify_webhook_signature
 from app.models.github_schemas import WebhookPayload
 from app.routers.reviews import run_inline_review
-from app.services.sqs import enqueue_payload
+from app.services.sqs import SQSConfigurationError, enqueue_payload
 
 logger = logging.getLogger(__name__)
 
@@ -96,7 +96,14 @@ async def receive_webhook(
             payload.pull_request.changed_files,
             settings.large_pr_threshold,
         )
-        await enqueue_payload(payload, settings)
+        try:
+            await enqueue_payload(payload, settings)
+        except SQSConfigurationError as exc:
+            logger.error("Large PR could not be queued: %s", exc)
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=str(exc),
+            ) from exc
         return JSONResponse(
             status_code=status.HTTP_202_ACCEPTED,
             content={

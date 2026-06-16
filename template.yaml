@@ -18,7 +18,7 @@ Globals:
     Timeout: 60
     MemorySize: 256
     Architectures:
-      - x86_64
+      - arm64
     Environment:
       Variables:
         PR_REVIEW_SECRET_NAME: !Ref SecretName
@@ -105,6 +105,8 @@ Resources:
             Queue: !GetAtt PRReviewQueue.Arn
             BatchSize: 1
             Enabled: true
+            FunctionResponseTypes:
+              - ReportBatchItemFailures
       Policies:
         - Statement:
             - Effect: Allow

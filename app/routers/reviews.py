@@ -21,11 +21,11 @@ from fastapi import APIRouter
 from app.core.config import Settings
 from app.models.github_schemas import WebhookPayload
 from app.models.review_schemas import ReviewResult
-from app.services.diff_processor import prepare_diffs
+from app.services.diff_processor import extract_reviewable_new_lines, prepare_diffs
 from app.services.github import GitHubService
 import asyncio
 from app.services.openai_review import OpenAIReviewService
-from app.services.token_manager import calculate_total_tokens
+from app.services.token_manager import calculate_total_tokens, filter_by_token_budget
 
 logger = logging.getLogger(__name__)
 
@@ -71,10 +71,11 @@ async def run_inline_review(
             max_files=settings.max_files_per_pr,
             max_diff_chars=settings.max_diff_chars,
         )
+        prepared = filter_by_token_budget(prepared, settings.max_total_tokens)
 
         if not prepared:
             logger.info(
-                "PR #%d on %s/%s: no reviewable files after filtering.",
+                "PR #%d on %s/%s: no reviewable files after filtering/budgeting.",
                 pr_number, owner, repo,
             )
             # Post an APPROVE review with no comments.
@@ -113,11 +114,23 @@ async def run_inline_review(
             filename = diff["filename"]
             patch = diff["patch"]
             try:
-                return await openai_service.review_file_diff(
+                comments = await openai_service.review_file_diff(
                     filename,
                     patch,
                     model=settings.openai_model,
                 )
+                valid_lines = extract_reviewable_new_lines(patch)
+                valid_comments = [
+                    comment for comment in comments if comment.line in valid_lines
+                ]
+                dropped_count = len(comments) - len(valid_comments)
+                if dropped_count:
+                    logger.warning(
+                        "Dropped %d invalid AI review comment(s) for %s.",
+                        dropped_count,
+                        filename,
+                    )
+                return valid_comments
             except Exception as exc:
                 # FR-12: Handle OpenAI API errors gracefully per file
                 logger.error(

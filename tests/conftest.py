@@ -56,6 +56,18 @@ def mock_boto3_client():
         yield mock
 
 
+@pytest.fixture(autouse=True)
+def mock_webhook_background_review():
+    """Prevent webhook tests from making real GitHub/OpenAI calls."""
+    from unittest.mock import patch
+
+    async def _noop_review(*args, **kwargs):
+        return None
+
+    with patch("app.routers.webhook.run_inline_review", _noop_review):
+        yield
+
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 

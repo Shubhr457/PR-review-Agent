@@ -204,6 +204,15 @@ class TestVerifyWebhookSignature:
             verify_webhook_signature(b"body", "secret", None)
         assert exc_info.value.status_code == 401
 
+    def test_missing_secret_raises_503(self) -> None:
+        from fastapi import HTTPException
+
+        from app.core.security import verify_webhook_signature
+
+        with pytest.raises(HTTPException) as exc_info:
+            verify_webhook_signature(b"body", "", "sha256=anything")
+        assert exc_info.value.status_code == 503
+
     def test_wrong_signature_raises_401(self) -> None:
         from fastapi import HTTPException
 
@@ -251,5 +260,25 @@ class TestSettings:
         s = Settings(_env_file=None)
         assert s.max_files_per_pr == 10
         assert s.max_diff_chars == 8000
+        assert s.max_total_tokens == 0
         assert s.large_pr_threshold == 15
         assert s.enable_docs is False
+
+    def test_validate_required_settings_raises_for_missing_required_values(self) -> None:
+        from app.core.config import Settings, validate_required_settings
+
+        with pytest.raises(RuntimeError, match="GITHUB_TOKEN"):
+            validate_required_settings(Settings(_env_file=None))
+
+    def test_validate_required_settings_accepts_complete_config(self) -> None:
+        from app.core.config import Settings, validate_required_settings
+
+        validate_required_settings(
+            Settings(
+                github_token="ghp_test",
+                openai_api_key="sk-test",
+                github_webhook_secret="secret",
+                sqs_queue_url="https://sqs.us-east-1.amazonaws.com/1/q",
+                _env_file=None,
+            )
+        )

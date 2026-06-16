@@ -5,13 +5,18 @@ Unit tests for AWS SQS service producer, consumer, and Lambda handler.
 """
 
 import json
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from app.core.config import Settings
 from app.models.github_schemas import WebhookPayload
-from app.services.sqs import enqueue_payload, process_sqs_event, sqs_lambda_handler
+from app.services.sqs import (
+    SQSConfigurationError,
+    enqueue_payload,
+    process_sqs_event,
+    sqs_lambda_handler,
+)
 from tests.conftest import minimal_pr_payload
 
 
@@ -55,7 +60,8 @@ async def test_enqueue_payload_missing_queue_url(mock_boto_client) -> None:
     payload = WebhookPayload.model_validate(raw_payload)
     settings = Settings(sqs_queue_url="")  # empty URL
 
-    await enqueue_payload(payload, settings)
+    with pytest.raises(SQSConfigurationError):
+        await enqueue_payload(payload, settings)
 
     # SQS client should not be instantiated
     mock_boto_client.assert_not_called()
@@ -73,7 +79,7 @@ async def test_process_sqs_event_success(
     event = {"Records": [{"body": body_str}]}
 
     # 2. Run event processor
-    await process_sqs_event(event)
+    result = await process_sqs_event(event)
 
     # 3. Assertions
     # Secrets should be loaded
@@ -88,6 +94,7 @@ async def test_process_sqs_event_success(
     assert isinstance(called_payload, WebhookPayload)
     assert called_payload.number == 42
     assert isinstance(called_settings, Settings)
+    assert result == {"batchItemFailures": []}
 
 
 @pytest.mark.asyncio
@@ -98,24 +105,24 @@ async def test_process_sqs_event_failure_propagates(
 ) -> None:
     # Verify that exceptions raised during processing are propagated so SQS fails the batch
     body_str = json.dumps(minimal_pr_payload())
-    event = {"Records": [{"body": body_str}]}
+    event = {"Records": [{"messageId": "msg-1", "body": body_str}]}
 
     mock_run_inline_review.side_effect = RuntimeError("Failed to review")
 
-    with pytest.raises(RuntimeError) as exc_info:
-        await process_sqs_event(event)
+    result = await process_sqs_event(event)
 
-    assert "Failed to review" in str(exc_info.value)
+    assert result == {"batchItemFailures": [{"itemIdentifier": "msg-1"}]}
 
 
 @patch("app.services.sqs.process_sqs_event")
 def test_sqs_lambda_handler(mock_process_sqs_event) -> None:
     # Setup mock process coroutine
-    mock_process_sqs_event.return_value = AsyncMock()()
+    mock_process_sqs_event.return_value = {"batchItemFailures": []}
 
     event = {"Records": []}
     response = sqs_lambda_handler(event, None)
 
     assert response["statusCode"] == 200
     assert "Processed SQS records successfully" in response["body"]
+    assert response["batchItemFailures"] == []
     mock_process_sqs_event.assert_called_once_with(event)
