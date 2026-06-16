@@ -14,7 +14,7 @@ a no-op when the AWS_LAMBDA_FUNCTION_NAME environment variable is not set.
 import json
 import logging
 import os
-from typing import Optional
+from typing import Any, Dict, Optional
 
 import boto3
 from botocore.exceptions import ClientError
@@ -55,9 +55,7 @@ def load_secrets_into_env(secret_name: Optional[str] = None) -> None:
         return
 
     secret_name = (
-        secret_name
-        or os.getenv("PR_REVIEW_SECRET_NAME")
-        or _DEFAULT_SECRET_NAME
+        secret_name or os.getenv("PR_REVIEW_SECRET_NAME") or _DEFAULT_SECRET_NAME
     )
 
     logger.info("Loading secrets from Secrets Manager: %s", secret_name)
@@ -75,12 +73,10 @@ def load_secrets_into_env(secret_name: Optional[str] = None) -> None:
 
     # Parse the JSON payload.
     try:
-        secrets: dict = json.loads(response["SecretString"])
+        secrets: Dict[str, Any] = json.loads(response["SecretString"])
     except (json.JSONDecodeError, KeyError) as exc:
         logger.exception("Secret '%s' does not contain valid JSON.", secret_name)
-        raise RuntimeError(
-            f"Secret '{secret_name}' is not valid JSON: {exc}"
-        ) from exc
+        raise RuntimeError(f"Secret '{secret_name}' is not valid JSON: {exc}") from exc
 
     # Inject each key into os.environ (uppercased).
     injected = 0

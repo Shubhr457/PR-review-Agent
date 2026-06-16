@@ -41,7 +41,7 @@ pyrightconfig.json
 # ── AWS SAM / CDK ─────────────────────────────────────────────────────────────
 .aws-sam/
 cdk.out/
-samconfig.toml
+samconfig.toml    # contains account/region-specific deployment config
 
 # ── Docker ────────────────────────────────────────────────────────────────────
 *.dockerignore

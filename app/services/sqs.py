@@ -42,8 +42,9 @@ async def enqueue_payload(payload: WebhookPayload, settings: Settings) -> None:
     region_name = "us-east-1"
     try:
         if ".amazonaws.com" in settings.sqs_queue_url:
+            # URL format: https://sqs.<region>.amazonaws.com/<account>/<queue>
             parts = settings.sqs_queue_url.split(".")
-            if len(parts) > 1 and parts[1].startswith("us-"):
+            if len(parts) > 1 and parts[1]:
                 region_name = parts[1]
     except Exception:
         logger.warning(
@@ -102,9 +103,11 @@ async def process_sqs_event(event: Dict[str, Any]) -> Dict[str, Any]:
         except Exception as exc:
             # With ReportBatchItemFailures enabled, SQS retries only failed records.
             logger.exception("Failed to process SQS message record.")
-            failures.append({
-                "itemIdentifier": record.get("messageId") or str(index),
-            })
+            failures.append(
+                {
+                    "itemIdentifier": record.get("messageId") or str(index),
+                }
+            )
 
     return {"batchItemFailures": failures}
 

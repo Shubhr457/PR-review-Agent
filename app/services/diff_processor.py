@@ -14,7 +14,7 @@ from __future__ import annotations
 import logging
 import os
 import re
-from typing import Any, Dict, List, Set
+from typing import Any, Dict, List, Optional, Set
 
 logger = logging.getLogger(__name__)
 
@@ -83,7 +83,7 @@ def prioritize_files(
 # ── FR-07 ────────────────────────────────────────────────────────────────────
 
 
-def truncate_diff(patch: str | None, max_chars: int) -> str:
+def truncate_diff(patch: Optional[str], max_chars: int) -> str:
     """Truncate a diff string that exceeds *max_chars*.
 
     Args:
@@ -98,18 +98,20 @@ def truncate_diff(patch: str | None, max_chars: int) -> str:
     if len(patch) <= max_chars:
         return patch
     logger.debug(
-        "Truncating diff from %d to %d chars.", len(patch), max_chars,
+        "Truncating diff from %d to %d chars.",
+        len(patch),
+        max_chars,
     )
     return patch[:max_chars] + TRUNCATION_NOTICE
 
 
-def extract_reviewable_new_lines(patch: str | None) -> Set[int]:
+def extract_reviewable_new_lines(patch: Optional[str]) -> Set[int]:
     """Return new-file line numbers that can receive GitHub review comments."""
     if not patch:
         return set()
 
     reviewable_lines: Set[int] = set()
-    current_line: int | None = None
+    current_line: Optional[int] = None
 
     for raw_line in patch.splitlines():
         header_match = _HUNK_HEADER_RE.match(raw_line)
@@ -158,8 +160,10 @@ def prepare_diffs(
 
     results: List[Dict[str, str]] = []
     for f in prioritized:
-        results.append({
-            "filename": f["filename"],
-            "patch": truncate_diff(f.get("patch"), max_diff_chars),
-        })
+        results.append(
+            {
+                "filename": f["filename"],
+                "patch": truncate_diff(f.get("patch"), max_diff_chars),
+            }
+        )
     return results

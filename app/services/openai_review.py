@@ -8,7 +8,7 @@ Implements:
 """
 
 import logging
-from typing import List
+from typing import List, Optional
 
 from openai import AsyncOpenAI
 from pydantic import BaseModel
@@ -52,7 +52,7 @@ class FileReviewResponse(BaseModel):
 class OpenAIReviewService:
     """Service to interact with OpenAI API for structural code review."""
 
-    def __init__(self, api_key: str, base_url: str = None) -> None:
+    def __init__(self, api_key: str, base_url: Optional[str] = None) -> None:
         """Initialize the async OpenAI client."""
         # Note: If base_url is provided, it can be used for mock testing or proxying.
         self.client = AsyncOpenAI(api_key=api_key, base_url=base_url)
