@@ -1,0 +1,33 @@
+# ── SAM Deployment Configuration Template ────────────────────────────────────
+# Copy this file to samconfig.toml and fill in your values.
+# NEVER commit samconfig.toml — it contains account-specific AWS details.
+#
+# Usage:
+#   cp samconfig.toml.example samconfig.toml
+#   sam build
+#   sam deploy --guided     # first time — populates samconfig.toml automatically
+#   sam deploy              # subsequent deploys — uses samconfig.toml
+
+version = 0.1
+
+[default.deploy.parameters]
+stack_name         = "pr-review-agent"
+resolve_s3         = true
+s3_prefix          = "pr-review-agent"
+confirm_changeset  = true
+capabilities       = "CAPABILITY_IAM"
+region             = "us-east-1"   # change to your target region
+
+# Override SAM template parameters.
+# SecretName must match the Secrets Manager secret you created.
+parameter_overrides = "SecretName=\"pr-review-agent/secrets\" LargeReviewTimeoutSeconds=\"900\""
+
+# Populated automatically by `sam deploy --guided` on first run.
+# Format: "FunctionLogicalId=<your-account-id>.dkr.ecr.<region>.amazonaws.com/<repo>"
+# image_repositories = [
+#   "WebhookFunction=<account-id>.dkr.ecr.<region>.amazonaws.com/<repo>",
+#   "SQSConsumerFunction=<account-id>.dkr.ecr.<region>.amazonaws.com/<repo>",
+# ]
+
+[default.global.parameters]
+region = "us-east-1"   # change to your target region
