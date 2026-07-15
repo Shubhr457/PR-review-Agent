@@ -27,6 +27,7 @@ class Settings(BaseSettings):
 
     # ── AWS / SQS ───────────────────────────────────────────────────────────
     sqs_queue_url: str = ""
+    webhook_deduplication_table: str = ""
 
     # ── Tuning ──────────────────────────────────────────────────────────────
     max_files_per_pr: int = 10
@@ -77,6 +78,7 @@ def validate_required_settings(settings: Settings) -> None:
         "OPENAI_API_KEY": settings.openai_api_key,
         "GITHUB_WEBHOOK_SECRET": settings.github_webhook_secret,
         "SQS_QUEUE_URL": settings.sqs_queue_url,
+        "WEBHOOK_DEDUPLICATION_TABLE": settings.webhook_deduplication_table,
     }
     missing = [name for name, value in required_values.items() if not value]
     if missing:

@@ -11,18 +11,23 @@ Responsibilities:
   5. Dispatch review as BackgroundTask or SQS job (FR-08).
 """
 
+import hashlib
 import json
 import logging
 from typing import Any, Dict, FrozenSet
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
 from app.core.config import Settings, get_settings
 from app.core.security import verify_webhook_signature
 from app.models.github_schemas import WebhookPayload
-from app.routers.reviews import run_inline_review
+from app.services.idempotency import (
+    IdempotencyConfigurationError,
+    claim_delivery,
+    release_delivery,
+)
 from app.services.sqs import SQSConfigurationError, enqueue_payload
 
 logger = logging.getLogger(__name__)
@@ -36,7 +41,6 @@ HANDLED_ACTIONS: FrozenSet[str] = frozenset({"opened", "synchronize", "reopened"
 @router.post("/webhook", status_code=status.HTTP_200_OK)
 async def receive_webhook(
     request: Request,
-    _background_tasks: BackgroundTasks,
     settings: Settings = Depends(get_settings),
 ) -> Dict[str, Any]:
     """
@@ -59,7 +63,7 @@ async def receive_webhook(
         raw: Dict[str, Any] = json.loads(body)
         payload = WebhookPayload.model_validate(raw)
     except (json.JSONDecodeError, ValidationError) as exc:
-        logger.warning("Webhook payload parsing failed: %s", exc)
+        logger.warning("Webhook payload parsing failed.")
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=str(exc),
@@ -67,61 +71,43 @@ async def receive_webhook(
 
     # ── 4. Filter to handled PR actions ─────────────────────────────────────
     if payload.action not in HANDLED_ACTIONS:
-        logger.debug(
-            "Ignoring PR #%s action '%s' on %s",
-            payload.number,
-            payload.action,
-            payload.repository.full_name,
-        )
+        logger.debug("Ignoring unsupported webhook action.")
         return {
             "message": f"Action '{payload.action}' ignored.",
             "pr_number": payload.number,
         }
 
-    logger.info(
-        "PR #%s '%s' on %s — action: %s | changed files: %s",
-        payload.number,
-        payload.pull_request.title,
-        payload.repository.full_name,
-        payload.action,
-        payload.pull_request.changed_files,
+    # Queue every review. Lambda BackgroundTasks still run within the invocation,
+    # so they cannot satisfy the GitHub acknowledgement deadline reliably.
+    delivery_id = request.headers.get("X-GitHub-Delivery") or hashlib.sha256(body).hexdigest()
+    revision_id = (
+        f"revision:{payload.repository.id}:{payload.number}:{payload.pull_request.head.sha}"
     )
+    claimed_keys = []
+    try:
+        for key in (delivery_id, revision_id):
+            if not await claim_delivery(settings.webhook_deduplication_table, key):
+                logger.info("Duplicate webhook delivery ignored.")
+                return JSONResponse(
+                    status_code=status.HTTP_202_ACCEPTED,
+                    content={"message": "Webhook already accepted."},
+                )
+            claimed_keys.append(key)
+    except IdempotencyConfigurationError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Service unavailable.") from exc
+    except Exception as exc:
+        for key in claimed_keys:
+            await release_delivery(settings.webhook_deduplication_table, key)
+        logger.error("Webhook deduplication check failed.")
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Service unavailable.") from exc
 
-    # ── 5. Dispatch review (FR-08) ────────────────────────────────────────────
-    if payload.pull_request.changed_files > settings.large_pr_threshold:
-        # Large PR → SQS queue (Milestone 4)
-        logger.info(
-            "PR #%s has %d files (> %d) — queuing to SQS.",
-            payload.number,
-            payload.pull_request.changed_files,
-            settings.large_pr_threshold,
-        )
-        try:
-            await enqueue_payload(payload, settings)
-        except SQSConfigurationError as exc:
-            logger.error("Large PR could not be queued: %s", exc)
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail=str(exc),
-            ) from exc
-        return JSONResponse(
-            status_code=status.HTTP_202_ACCEPTED,
-            content={
-                "message": "Large PR queued for async review.",
-                "action": payload.action,
-                "pr_number": payload.number,
-                "repo": payload.repository.full_name,
-                "changed_files": payload.pull_request.changed_files,
-            },
-        )
+    try:
+        await enqueue_payload(payload, settings)
+    except Exception as exc:
+        for key in claimed_keys:
+            await release_delivery(settings.webhook_deduplication_table, key)
+        logger.error("Webhook queue submission failed.")
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Service unavailable.") from exc
 
-    # Small / normal PR → inline BackgroundTask.
-    _background_tasks.add_task(run_inline_review, payload, settings)
-
-    return {
-        "message": "Webhook received — review dispatched.",
-        "action": payload.action,
-        "pr_number": payload.number,
-        "repo": payload.repository.full_name,
-        "changed_files": payload.pull_request.changed_files,
-    }
+    logger.info("Webhook queued for asynchronous review.")
+    return JSONResponse(status_code=status.HTTP_202_ACCEPTED, content={"message": "Webhook accepted for review."})

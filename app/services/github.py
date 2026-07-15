@@ -70,14 +70,8 @@ class GitHubService:
     def _raise_for_status(response: httpx.Response) -> None:
         if response.is_success:
             return
-        detail = response.text[:500]  # cap noisy payloads
-        logger.error(
-            "GitHub API error %s %s: %s",
-            response.status_code,
-            response.request.url,
-            detail,
-        )
-        raise GitHubServiceError(response.status_code, detail)
+        logger.error("GitHub API request failed with status %s.", response.status_code)
+        raise GitHubServiceError(response.status_code, "request failed")
 
     async def _request(
         self,
@@ -144,13 +138,7 @@ class GitHubService:
                     break
                 page += 1
 
-        logger.info(
-            "Fetched %d files for %s/%s#%d.",
-            len(all_files),
-            owner,
-            repo,
-            pr_number,
-        )
+        logger.info("Fetched %d files for review.", len(all_files))
         return all_files
 
     # ── Post review (FR-13, FR-14, FR-15) ────────────────────────────────────
@@ -208,14 +196,14 @@ class GitHubService:
         owner: str,
         repo: str,
         pr_number: int,
-        error_msg: str,
+        error_msg: str = "review unavailable",
     ) -> Optional[Dict[str, Any]]:
         """Post a warning comment so the PR is never permanently blocked (FR-16)."""
         body = (
             "⚠️ **PR Review Agent — Error**\n\n"
             "The automated review could not be completed. "
             "This PR is **not blocked** — you may merge at your discretion.\n\n"
-            f"```\n{error_msg}\n```"
+            "Please retry the review or contact the platform team if this persists."
         )
 
         try:
@@ -227,13 +215,7 @@ class GitHubService:
                     json={"body": body},
                 )
                 self._raise_for_status(response)
-            logger.warning(
-                "Posted failure comment on %s/%s#%d: %s",
-                owner,
-                repo,
-                pr_number,
-                error_msg,
-            )
+            logger.warning("Posted fail-open warning comment.")
             return response.json()
         except Exception:
             logger.exception(

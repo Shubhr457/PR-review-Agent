@@ -35,12 +35,8 @@ router = APIRouter(tags=["reviews"])
 async def run_inline_review(
     payload: WebhookPayload,
     settings: Settings,
-) -> None:
-    """Background task: fetch diffs, review, and post results.
-
-    This is called as a FastAPI ``BackgroundTask`` for PRs with
-    ``changed_files <= LARGE_PR_THRESHOLD``.
-    """
+) -> bool:
+    """Process a queued review and report whether it completed or failed open."""
     owner = payload.repository.full_name.split("/")[0]
     repo = payload.repository.name
     pr_number = payload.number
@@ -74,10 +70,7 @@ async def run_inline_review(
         prepared = filter_by_token_budget(prepared, settings.max_total_tokens)
 
         if not prepared:
-            logger.info(
-                "PR #%d on %s/%s: no reviewable files after filtering/budgeting.",
-                pr_number, owner, repo,
-            )
+            logger.info("No reviewable files after filtering or budgeting.")
             # Post an APPROVE review with no comments.
             review = ReviewResult(
                 pr_number=pr_number,
@@ -92,21 +85,14 @@ async def run_inline_review(
                 state="success",
                 description="Skipped: no reviewable files.",
             )
-            return
+            return True
 
-        logger.info(
-            "PR #%d on %s/%s: %d files ready for review.",
-            pr_number, owner, repo, len(prepared),
-        )
+        logger.info("Review files prepared.")
 
         # ── 3. AI Review (Milestone 3 integration) ───────────────────────
         # Estimate total tokens for logging.
         total_tokens = calculate_total_tokens(prepared)
-        logger.info(
-            "Estimated total tokens for review on PR #%d: %d",
-            pr_number,
-            total_tokens,
-        )
+        logger.info("Review token budget calculated: %d", total_tokens)
 
         openai_service = OpenAIReviewService(api_key=settings.openai_api_key)
 
@@ -126,18 +112,13 @@ async def run_inline_review(
                 dropped_count = len(comments) - len(valid_comments)
                 if dropped_count:
                     logger.warning(
-                        "Dropped %d invalid AI review comment(s) for %s.",
+                        "Dropped %d invalid AI review comment(s).",
                         dropped_count,
-                        filename,
                     )
                 return valid_comments
             except Exception as exc:
                 # FR-12: Handle OpenAI API errors gracefully per file
-                logger.error(
-                    "Gracefully handling review failure for file %s: %s",
-                    filename,
-                    exc,
-                )
+                logger.error("A file review failed; continuing with other files.")
                 return []
 
         # FR-11: Process all files concurrently
@@ -166,24 +147,29 @@ async def run_inline_review(
             state="success",
             description="Review completed successfully.",
         )
+        return True
 
-    except Exception as exc:
+    except Exception:
         # ── FR-16: fail open ─────────────────────────────────────────────
-        logger.exception(
-            "Review failed for PR #%d on %s/%s.",
-            pr_number, owner, repo,
-        )
+        logger.error("Review failed before completion.")
+        status_posted = False
+        comment_posted = False
         try:
             await github.post_commit_status(
                 owner=owner,
                 repo=repo,
                 sha=commit_sha,
                 state="success",
-                description=f"Fail-open: {str(exc)}",
+                description="Fail-open: review unavailable.",
+            )
+            status_posted = True
+        except Exception:
+            logger.error("Could not post fail-open commit status.")
+
+        try:
+            comment_posted = bool(
+                await github.post_failure_comment(owner, repo, pr_number)
             )
         except Exception:
-            logger.exception("Could not post fail-open commit status.")
-
-        await github.post_failure_comment(
-            owner, repo, pr_number, str(exc),
-        )
+            logger.error("Could not post fail-open warning comment.")
+        return status_posted and comment_posted

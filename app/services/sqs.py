@@ -8,11 +8,12 @@ Implements the SQS message producer (enqueue) and consumer (Lambda entrypoint).
 import asyncio
 import json
 import logging
+import os
 from typing import Any, Dict
 
 import boto3
 
-from app.core.config import Settings, get_settings
+from app.core.config import Settings, get_settings, validate_required_settings
 from app.core.secrets import load_secrets_into_env
 from app.models.github_schemas import WebhookPayload
 from app.routers.reviews import run_inline_review
@@ -54,12 +55,7 @@ async def enqueue_payload(payload: WebhookPayload, settings: Settings) -> None:
 
     body_str = payload.model_dump_json()
 
-    logger.info(
-        "Enqueueing PR #%d (%s) to SQS (region: %s)",
-        payload.number,
-        payload.repository.full_name,
-        region_name,
-    )
+    logger.info("Enqueueing review job to SQS (region: %s).", region_name)
 
     await asyncio.to_thread(
         _send_sqs_message,
@@ -76,7 +72,10 @@ async def process_sqs_event(event: Dict[str, Any]) -> Dict[str, Any]:
     """
     # Load secrets on cold start/execution if SQS Lambda runs standalone
     load_secrets_into_env()
+    get_settings.cache_clear()
     settings = get_settings()
+    if os.getenv("AWS_LAMBDA_FUNCTION_NAME"):
+        validate_required_settings(settings)
 
     records = event.get("Records", [])
     logger.info("Processing SQS event containing %d record(s).", len(records))
@@ -92,17 +91,13 @@ async def process_sqs_event(event: Dict[str, Any]) -> Dict[str, Any]:
         try:
             raw_payload = json.loads(body)
             payload = WebhookPayload.model_validate(raw_payload)
-            logger.info(
-                "Triggering async SQS review for PR #%d on %s",
-                payload.number,
-                payload.repository.full_name,
-            )
-            # Run review orchestrator
-            await run_inline_review(payload, settings)
+            completed = await run_inline_review(payload, settings)
+            if not completed:
+                raise RuntimeError("Review could not be completed or failed open.")
 
-        except Exception as exc:
+        except Exception:
             # With ReportBatchItemFailures enabled, SQS retries only failed records.
-            logger.exception("Failed to process SQS message record.")
+            logger.error("Failed to process SQS message record.")
             failures.append(
                 {
                     "itemIdentifier": record.get("messageId") or str(index),

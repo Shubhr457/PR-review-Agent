@@ -45,7 +45,7 @@ def test_health_version_matches_settings(client: TestClient) -> None:
 def test_health_dependency_keys(client: TestClient) -> None:
     with patch(_PATCH, new=AsyncMock(return_value=_GITHUB_OK)):
         data: Dict[str, Any] = client.get("/health").json()
-    assert set(data["dependencies"].keys()) == {"github_api", "openai_api", "sqs"}
+    assert set(data["dependencies"].keys()) == {"github_api", "openai_api", "sqs", "deduplication"}
 
 
 def test_health_all_dependencies_ok(client: TestClient) -> None:
@@ -56,6 +56,7 @@ def test_health_all_dependencies_ok(client: TestClient) -> None:
     assert deps["github_api"]["ok"] is True
     assert deps["openai_api"]["ok"] is True
     assert deps["sqs"]["ok"] is True
+    assert deps["deduplication"]["ok"] is True
     assert data["status"] == "ok"
 
 
@@ -81,6 +82,12 @@ def test_health_openai_key_format_check(client: TestClient) -> None:
     result = _check_openai(bad_settings)
     assert result["ok"] is False
     assert "format" in result["detail"]
+
+
+def test_liveness_does_not_depend_on_external_services(client: TestClient) -> None:
+    response = client.get("/health/live")
+    assert response.status_code == 200
+    assert response.json()["status"] == "ok"
 
 
 def test_health_sqs_missing(client: TestClient) -> None:

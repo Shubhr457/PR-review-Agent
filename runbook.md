@@ -9,9 +9,10 @@ This document provides operational instructions, troubleshooting procedures, and
 The PR Review Agent runs as a serverless containerized application on AWS Lambda:
 
 *   **API Gateway (HTTP API v2)**: Entrypoint for all incoming GitHub webhooks on `/webhook`.
-*   **WebhookFunction (Lambda)**: Handles webhook HMAC signature verification and quickly responds to GitHub (under 10s SLA). Normal PRs (<= 15 files) are reviewed inline in a background task. Large PRs (> 15 files) are queued to SQS.
-*   **PRReviewQueue (SQS)**: Asynchronous buffer for large PRs. Messages are automatically retried up to 3 times before routing to the DLQ.
+*   **WebhookFunction (Lambda)**: Validates webhook signatures, deduplicates deliveries, queues every review, and returns `202 Accepted` promptly.
+*   **PRReviewQueue (SQS)**: Asynchronous buffer for every review. Messages are automatically retried up to 3 times before routing to the DLQ when neither review completion nor fail-open confirmation succeeds.
 *   **SQSConsumerFunction (Lambda)**: Triggered by SQS to process large PRs asynchronously (supports up to 15-minute executions).
+*   **WebhookDeduplicationTable (DynamoDB)**: Stores GitHub delivery IDs and PR revision keys with a 24-hour TTL to prevent duplicate reviews.
 *   **AWS Secrets Manager**: Secure storage for the GitHub PAT, Webhook secret, and OpenAI API Key.
 
 ---
@@ -38,7 +39,7 @@ Alarms are set up in the CloudFormation stack to trigger when issues arise:
 ## 3. Configuration & Secrets Rotation
 
 ### Editing Settings
-All settings (file thresholds, limits, skipped file types) can be updated by setting them as keys in the AWS Secrets Manager JSON secret `pr-review-agent/secrets` or by adding them to the environment variables of the Lambda functions.
+All settings (file thresholds, limits, skipped file types) can be updated by setting them as keys in the AWS Secrets Manager JSON secret `pr-review-agent/secrets` or by adding them to the environment variables of the Lambda functions. `WEBHOOK_DEDUPLICATION_TABLE` is supplied by the SAM template and must be retained.
 
 *   `MAX_FILES_PER_PR` (default: 10)
 *   `MAX_DIFF_CHARS` (default: 8000)

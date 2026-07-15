@@ -16,7 +16,8 @@ import time
 from typing import Any, Dict
 
 import httpx
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, status
+from fastapi.responses import JSONResponse
 
 from app.core.config import Settings, get_settings
 
@@ -72,11 +73,24 @@ def _check_sqs(settings: Settings) -> Dict[str, Any]:
     return {"ok": True, "detail": "configured"}
 
 
+def _check_deduplication(settings: Settings) -> Dict[str, Any]:
+    if not settings.webhook_deduplication_table:
+        return {"ok": False, "detail": "deduplication table not configured"}
+    return {"ok": True, "detail": "configured"}
+
+
 # ── Route ────────────────────────────────────────────────────────────────────
 
 
+@router.get("/health/live")
+async def liveness_check() -> Dict[str, Any]:
+    """Indicate that the process can serve requests without external calls."""
+    return {"status": "ok", "uptime_seconds": round(time.time() - _START_TIME, 2)}
+
+
+@router.get("/health/ready")
 @router.get("/health")
-async def health_check(settings: Settings = Depends(get_settings)) -> Dict[str, Any]:
+async def readiness_check(settings: Settings = Depends(get_settings)) -> JSONResponse:
     """
     Return service status, version, uptime, and per-dependency health.
 
@@ -85,10 +99,11 @@ async def health_check(settings: Settings = Depends(get_settings)) -> Dict[str, 
     github = await _check_github(settings)
     openai_dep = _check_openai(settings)
     sqs = _check_sqs(settings)
+    deduplication = _check_deduplication(settings)
 
-    all_ok = github["ok"] and openai_dep["ok"] and sqs["ok"]
+    all_ok = github["ok"] and openai_dep["ok"] and sqs["ok"] and deduplication["ok"]
 
-    return {
+    payload = {
         "status": "ok" if all_ok else "degraded",
         "version": settings.app_version,
         "uptime_seconds": round(time.time() - _START_TIME, 2),
@@ -96,5 +111,10 @@ async def health_check(settings: Settings = Depends(get_settings)) -> Dict[str, 
             "github_api": github,
             "openai_api": openai_dep,
             "sqs": sqs,
+            "deduplication": deduplication,
         },
     }
+    return JSONResponse(
+        status_code=status.HTTP_200_OK if all_ok else status.HTTP_503_SERVICE_UNAVAILABLE,
+        content=payload,
+    )

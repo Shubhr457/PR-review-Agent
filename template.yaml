@@ -23,6 +23,7 @@ Globals:
       Variables:
         PR_REVIEW_SECRET_NAME: !Ref SecretName
         SQS_QUEUE_URL: !Ref PRReviewQueue
+        WEBHOOK_DEDUPLICATION_TABLE: !Ref WebhookDeduplicationTable
 
 # ── Parameters ───────────────────────────────────────────────────────────────
 Parameters:
@@ -46,7 +47,7 @@ Resources:
     Properties:
       FunctionName: pr-review-agent-webhook
       PackageType: Image
-      Timeout: 120
+      Timeout: 20
       MemorySize: 256
       Events:
         WebhookPost:
@@ -84,6 +85,11 @@ Resources:
               Action:
                 - sqs:SendMessage
               Resource: !GetAtt PRReviewQueue.Arn
+            - Effect: Allow
+              Action:
+                - dynamodb:PutItem
+                - dynamodb:DeleteItem
+              Resource: !GetAtt WebhookDeduplicationTable.Arn
     Metadata:
       DockerTag: webhook-v1
       DockerContext: .
@@ -169,6 +175,21 @@ Resources:
     Properties:
       QueueName: pr-review-dlq
       MessageRetentionPeriod: 1209600 # 14 days
+
+  WebhookDeduplicationTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: pr-review-webhook-deliveries
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: delivery_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: delivery_id
+          KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: expires_at
+        Enabled: true
 
   # ── Log Groups (Milestone 6) ──────────────────────────────────────────────
   WebhookFunctionLogGroup:
