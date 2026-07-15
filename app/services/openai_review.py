@@ -103,6 +103,6 @@ class OpenAIReviewService:
             logger.info("OpenAI completed review for %s: no issues found.", filename)
             return []
 
-        except Exception as exc:
-            logger.exception("Failed to review file %s via OpenAI API.", filename)
-            raise exc
+        except Exception:
+            logger.error("OpenAI file review request failed.")
+            raise

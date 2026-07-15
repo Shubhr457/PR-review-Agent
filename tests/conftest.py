@@ -27,6 +27,7 @@ def override_settings() -> Settings:
         openai_api_key="sk-test",
         github_webhook_secret=TEST_WEBHOOK_SECRET,
         sqs_queue_url="https://sqs.us-east-1.amazonaws.com/000000000000/test-queue",
+        webhook_deduplication_table="test-webhook-deliveries",
         enable_docs=True,
         app_version="1.0.0-test",
     )
@@ -57,14 +58,15 @@ def mock_boto3_client():
 
 
 @pytest.fixture(autouse=True)
-def mock_webhook_background_review():
-    """Prevent webhook tests from making real GitHub/OpenAI calls."""
-    from unittest.mock import patch
+def mock_webhook_queue_dependencies():
+    """Prevent webhook tests from invoking AWS services."""
+    from unittest.mock import AsyncMock, patch
 
-    async def _noop_review(*args, **kwargs):
-        return None
-
-    with patch("app.routers.webhook.run_inline_review", _noop_review):
+    with (
+        patch("app.routers.webhook.claim_delivery", AsyncMock(return_value=True)),
+        patch("app.routers.webhook.release_delivery", AsyncMock()),
+        patch("app.routers.webhook.enqueue_payload", AsyncMock()),
+    ):
         yield
 
 

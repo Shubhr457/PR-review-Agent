@@ -50,8 +50,7 @@ def filter_by_token_budget(
             current_tokens += estimated
         else:
             logger.warning(
-                "Skipping file %s (estimated %d tokens) — exceeds remaining token budget (%d left).",
-                diff.get("filename"),
+                "Skipping a file (estimated %d tokens) — exceeds remaining token budget (%d left).",
                 estimated,
                 token_budget - current_tokens,
             )

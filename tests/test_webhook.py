@@ -15,6 +15,7 @@ import json
 from typing import Any, Dict
 
 import pytest
+from unittest.mock import AsyncMock, patch
 from starlette.testclient import TestClient
 
 from tests.conftest import minimal_pr_payload, webhook_headers
@@ -56,16 +57,13 @@ def test_tampered_body_returns_401(client: TestClient) -> None:
 
 
 @pytest.mark.parametrize("action", ["opened", "synchronize", "reopened"])
-def test_handled_actions_return_200(client: TestClient, action: str) -> None:
+def test_handled_actions_return_202(client: TestClient, action: str) -> None:
     payload = json.dumps(minimal_pr_payload(action=action)).encode()
     headers = webhook_headers(payload)
     response = client.post("/webhook", content=payload, headers=headers)
-    assert response.status_code == 200
+    assert response.status_code == 202
     data: Dict[str, Any] = response.json()
-    assert data["action"] == action
-    assert data["pr_number"] == 42
-    assert data["repo"] == "octocat/Hello-World"
-    assert "dispatched" in data["message"].lower()
+    assert "accepted" in data["message"].lower()
 
 
 # ── Dispatch routing (FR-08 / Milestone 2) ───────────────────────────────────
@@ -79,19 +77,57 @@ def test_large_pr_returns_202(client: TestClient) -> None:
     response = client.post("/webhook", content=payload, headers=headers)
     assert response.status_code == 202
     data: Dict[str, Any] = response.json()
-    assert data["changed_files"] == 20
-    assert "queued" in data["message"].lower()
+    assert "accepted" in data["message"].lower()
 
 
-def test_small_pr_returns_200_with_dispatch(client: TestClient) -> None:
-    """PRs within threshold should dispatch inline and return 200."""
+def test_small_pr_returns_202_with_dispatch(client: TestClient) -> None:
+    """Every PR is queued so GitHub receives an immediate acknowledgement."""
     payload = json.dumps(minimal_pr_payload(changed_files=5)).encode()
     headers = webhook_headers(payload)
     response = client.post("/webhook", content=payload, headers=headers)
-    assert response.status_code == 200
+    assert response.status_code == 202
     data: Dict[str, Any] = response.json()
-    assert data["changed_files"] == 5
-    assert "dispatched" in data["message"].lower()
+    assert "accepted" in data["message"].lower()
+
+
+def test_duplicate_delivery_is_not_queued_twice(client: TestClient) -> None:
+    payload = json.dumps(minimal_pr_payload()).encode()
+    headers = {**webhook_headers(payload), "X-GitHub-Delivery": "delivery-1"}
+    with (
+        patch("app.routers.webhook.claim_delivery", AsyncMock(return_value=False)),
+        patch("app.routers.webhook.enqueue_payload", AsyncMock()) as enqueue,
+    ):
+        response = client.post("/webhook", content=payload, headers=headers)
+
+    assert response.status_code == 202
+    assert "already" in response.json()["message"].lower()
+    enqueue.assert_not_awaited()
+
+
+def test_same_pr_revision_is_not_queued_twice(client: TestClient) -> None:
+    payload = json.dumps(minimal_pr_payload()).encode()
+    headers = {**webhook_headers(payload), "X-GitHub-Delivery": "delivery-3"}
+    with (
+        patch("app.routers.webhook.claim_delivery", AsyncMock(side_effect=[True, False])),
+        patch("app.routers.webhook.enqueue_payload", AsyncMock()) as enqueue,
+    ):
+        response = client.post("/webhook", content=payload, headers=headers)
+
+    assert response.status_code == 202
+    enqueue.assert_not_awaited()
+
+
+def test_queue_failure_releases_delivery_for_github_retry(client: TestClient) -> None:
+    payload = json.dumps(minimal_pr_payload()).encode()
+    headers = {**webhook_headers(payload), "X-GitHub-Delivery": "delivery-2"}
+    with (
+        patch("app.routers.webhook.enqueue_payload", AsyncMock(side_effect=RuntimeError("queue unavailable"))),
+        patch("app.routers.webhook.release_delivery", AsyncMock()) as release,
+    ):
+        response = client.post("/webhook", content=payload, headers=headers)
+
+    assert response.status_code == 503
+    assert release.await_count == 2
 
 
 @pytest.mark.parametrize(
@@ -135,7 +171,7 @@ def test_extra_unknown_fields_are_ignored(client: TestClient) -> None:
     body = json.dumps(payload).encode()
     headers = webhook_headers(body)
     response = client.post("/webhook", content=body, headers=headers)
-    assert response.status_code == 200
+    assert response.status_code == 202
 
 
 # ── Response shape ────────────────────────────────────────────────────────────
@@ -148,19 +184,15 @@ def test_webhook_response_contains_expected_keys(client: TestClient) -> None:
         "/webhook", content=payload, headers=headers
     ).json()
     assert "message" in data
-    assert "action" in data
-    assert "pr_number" in data
-    assert "repo" in data
-    assert "changed_files" in data
 
 
-def test_changed_files_reported_correctly(client: TestClient) -> None:
+def test_webhook_does_not_echo_pr_metadata(client: TestClient) -> None:
     payload = json.dumps(minimal_pr_payload(changed_files=7)).encode()
     headers = webhook_headers(payload)
     data: Dict[str, Any] = client.post(
         "/webhook", content=payload, headers=headers
     ).json()
-    assert data["changed_files"] == 7
+    assert set(data) == {"message"}
 
 
 # ── Edge cases ────────────────────────────────────────────────────────────────
@@ -184,4 +216,4 @@ def test_pr_with_null_body_field(client: TestClient) -> None:
     body = json.dumps(payload).encode()
     headers = webhook_headers(body)
     response = client.post("/webhook", content=body, headers=headers)
-    assert response.status_code == 200
+    assert response.status_code == 202

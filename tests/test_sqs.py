@@ -114,6 +114,19 @@ async def test_process_sqs_event_failure_propagates(
     assert result == {"batchItemFailures": [{"itemIdentifier": "msg-1"}]}
 
 
+@pytest.mark.asyncio
+@patch("app.services.sqs.load_secrets_into_env")
+@patch("app.services.sqs.run_inline_review", return_value=False)
+async def test_process_sqs_event_retries_when_fail_open_cannot_be_confirmed(
+    mock_run_inline_review, mock_load_secrets
+) -> None:
+    event = {"Records": [{"messageId": "msg-2", "body": json.dumps(minimal_pr_payload())}]}
+
+    result = await process_sqs_event(event)
+
+    assert result == {"batchItemFailures": [{"itemIdentifier": "msg-2"}]}
+
+
 @patch("app.services.sqs.process_sqs_event")
 def test_sqs_lambda_handler(mock_process_sqs_event) -> None:
     # Setup mock process coroutine

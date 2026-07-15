@@ -279,6 +279,7 @@ class TestSettings:
                 openai_api_key="sk-test",
                 github_webhook_secret="secret",
                 sqs_queue_url="https://sqs.us-east-1.amazonaws.com/1/q",
+                webhook_deduplication_table="webhook-deliveries",
                 _env_file=None,
             )
         )

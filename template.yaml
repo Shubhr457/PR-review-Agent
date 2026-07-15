@@ -23,6 +23,7 @@ Globals:
       Variables:
         PR_REVIEW_SECRET_NAME: !Ref SecretName
         SQS_QUEUE_URL: !Ref PRReviewQueue
+        WEBHOOK_DEDUPLICATION_TABLE: !Ref WebhookDeduplicationTable
 
 # ── Parameters ───────────────────────────────────────────────────────────────
 Parameters:
@@ -40,14 +41,13 @@ Parameters:
 
 # ── Resources ────────────────────────────────────────────────────────────────
 Resources:
-
   # ── Webhook Lambda (API Gateway → FastAPI) ─────────────────────────────────
   WebhookFunction:
     Type: AWS::Serverless::Function
     Properties:
       FunctionName: pr-review-agent-webhook
       PackageType: Image
-      Timeout: 60
+      Timeout: 20
       MemorySize: 256
       Events:
         WebhookPost:
@@ -85,6 +85,11 @@ Resources:
               Action:
                 - sqs:SendMessage
               Resource: !GetAtt PRReviewQueue.Arn
+            - Effect: Allow
+              Action:
+                - dynamodb:PutItem
+                - dynamodb:DeleteItem
+              Resource: !GetAtt WebhookDeduplicationTable.Arn
     Metadata:
       DockerTag: webhook-v1
       DockerContext: .
@@ -98,6 +103,9 @@ Resources:
       PackageType: Image
       Timeout: !Ref LargeReviewTimeoutSeconds
       MemorySize: 512
+      ImageConfig:
+        Command:
+          - app.services.sqs.sqs_lambda_handler
       Events:
         SQSEvent:
           Type: SQS
@@ -155,18 +163,33 @@ Resources:
     Type: AWS::SQS::Queue
     Properties:
       QueueName: pr-review-queue
-      VisibilityTimeout: 960   # Must exceed Lambda timeout (900s) + buffer
-      MessageRetentionPeriod: 86400  # 1 day
+      VisibilityTimeout: 960 # Must exceed Lambda timeout (900s) + buffer
+      MessageRetentionPeriod: 86400 # 1 day
       RedrivePolicy:
         deadLetterTargetArn: !GetAtt PRReviewDLQ.Arn
-        maxReceiveCount: 3     # After 3 failures → DLQ
+        maxReceiveCount: 3 # After 3 failures → DLQ
 
   # ── Dead Letter Queue ─────────────────────────────────────────────────────
   PRReviewDLQ:
     Type: AWS::SQS::Queue
     Properties:
       QueueName: pr-review-dlq
-      MessageRetentionPeriod: 1209600  # 14 days
+      MessageRetentionPeriod: 1209600 # 14 days
+
+  WebhookDeduplicationTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: pr-review-webhook-deliveries
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: delivery_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: delivery_id
+          KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: expires_at
+        Enabled: true
 
   # ── Log Groups (Milestone 6) ──────────────────────────────────────────────
   WebhookFunctionLogGroup:
@@ -191,6 +214,38 @@ Resources:
         - MetricValue: "1"
           MetricNamespace: "PRReviewAgent"
           MetricName: "GitHubAuth401Errors"
+
+  OpenAIErrorWebhookMetricFilter:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !Ref WebhookFunctionLogGroup
+      FilterPattern: '"Failed to review file"'
+      MetricTransformations:
+        - MetricValue: "1"
+          MetricNamespace: "PRReviewAgent"
+          MetricName: "OpenAIReviewErrors"
+
+  OpenAIErrorSQSMetricFilter:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !Ref SQSConsumerFunctionLogGroup
+      FilterPattern: '"Failed to review file"'
+      MetricTransformations:
+        - MetricValue: "1"
+          MetricNamespace: "PRReviewAgent"
+          MetricName: "OpenAIReviewErrors"
+
+  OpenAIErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: "Alarm if OpenAI review failures exceed 5 in a 5-minute window"
+      MetricName: OpenAIReviewErrors
+      Namespace: PRReviewAgent
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 5
+      ComparisonOperator: GreaterThanThreshold
 
   # ── CloudWatch Alarms (Milestone 6) ───────────────────────────────────────
   GitHubAuthErrorAlarm:

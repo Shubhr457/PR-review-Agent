@@ -194,7 +194,7 @@ class TestPostFailureComment:
         )
 
         assert "/repos/acme/widgets/issues/7/comments" in captured["url"]
-        assert "Something broke" in captured["body"]["body"]
+        assert "Something broke" not in captured["body"]["body"]
         assert "not blocked" in captured["body"]["body"].lower()
         assert result is not None
 
